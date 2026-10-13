@@ -276,5 +276,43 @@ out=$(FAKE_HERDR_VERSION=1.0.1 FAKE_DROP_TAB_CMD=rename session); rc=$?
 out=$(FAKE_HERDR_VERSION=1.0.2 FAKE_ADD_TAB_CMD=teleport session); rc=$?
 [ $rc = 1 ] && grep -q "tab: teleport" <<<"$out" && ok || bad "a new Herdr version with additions should warn again (rc=$rc): $out"
 
+# --- Herdr companion (herdr-plugin.toml and its panes) -------------------------
+toml_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo/herdr-plugin.toml")
+[ "$toml_version" = "$(jq -r .version "$repo/.claude-plugin/plugin.json")" ] && ok || bad "herdr-plugin.toml and plugin.json versions differ"
+bash -n "$repo/herdr/setup.sh" && bash -n "$repo/herdr/workers.sh" && ok || bad "herdr pane scripts have syntax errors"
+
+fake_claude="$work/fake-claude"
+mkdir -p "$fake_claude"
+cat >"$fake_claude/claude" <<EOF
+#!/usr/bin/env bash
+echo "claude \$*" >>"$work/claude.log"
+case "\$*" in
+  "plugin list") [ -f "$work/claude-installed" ] && printf '  ❯ herdr-lock@herdr-lock\n    Version: 1.2.0\n    Status: ✔ enabled\n' ;;
+  "plugin install herdr-lock@herdr-lock --scope user") touch "$work/claude-installed" ;;
+esac
+exit 0
+EOF
+chmod +x "$fake_claude/claude"
+pane() { (cd "$repo" && PATH="$fake_claude:$PATH" SHELL=/bin/sh bash "herdr/$1" <<<"x" 2>&1); }
+: >"$work/claude.log"; rm -f "$work/claude-installed"
+pane setup.sh >/dev/null
+grep -qx "claude plugin marketplace add aalvarezdeliveryhub/herdr-lock" "$work/claude.log" \
+  && grep -qx "claude plugin install herdr-lock@herdr-lock --scope user" "$work/claude.log" \
+  && ok || bad "first setup should add the marketplace and install the plugin: $(cat "$work/claude.log")"
+: >"$work/claude.log"
+pane setup.sh >/dev/null
+grep -qx "claude plugin update herdr-lock@herdr-lock" "$work/claude.log" && ! grep -q "plugin install" "$work/claude.log" \
+  && ok || bad "setup when installed should update, not install: $(cat "$work/claude.log")"
+
+export FAKE_HERDR_LOG="$work/herdr2.log" FAKE_HERDR_STATE="$work/herdr2-state.json"
+python3 -I - "$FAKE_HERDR_STATE" <<'PY'
+import json, sys
+a = lambda n, ws: {"name": n, "pane_id": f"{ws}:p2", "tab_id": f"{ws}:t2", "workspace_id": ws, "cwd": "/x", "agent_status": "idle"}
+json.dump({"next": 5, "tabs": {}, "agents": {"mine": a("mine", "wT"), "theirs": a("theirs", "wX")}}, open(sys.argv[1], "w"))
+PY
+out=$(cd "$repo" && HERDR_BIN_PATH="$stub/herdr" HERDR_WORKSPACE_ID=wT SHELL=/bin/sh bash herdr/workers.sh <<<"x" 2>&1)
+grep -q "mine" <<<"$out" && ! grep -q "theirs" <<<"$out" && ok || bad "workers pane should list only this workspace's agents: $out"
+unset FAKE_HERDR_LOG FAKE_HERDR_STATE
+
 echo "pass=$pass fail=$fail"
 [ $fail = 0 ]

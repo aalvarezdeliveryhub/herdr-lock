@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0 (2026-10-13)
+
+- Listed in Herdr's plugin directory: `herdr-plugin.toml` adds a **set up** pane that installs or updates the Claude Code plugin when you open it, and an **agents** pane that lists the agents in the current workspace. Nothing runs at install time.
+
 ## 1.1.0 (2026-10-13)
 
 - `herdr-worker list` shows the workers in your workspace; `herdr-worker close <name>` closes one by name.

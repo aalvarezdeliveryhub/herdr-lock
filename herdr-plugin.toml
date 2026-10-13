@@ -1,0 +1,35 @@
+# Herdr side of herdr-lock. The lock itself is a Claude Code plugin (see
+# .claude-plugin/ and the README); this manifest lists it in Herdr's plugin
+# directory and adds two panes: one that installs or updates the Claude Code
+# plugin when you open it, and one that lists the agents in the current
+# workspace. Nothing runs at install time.
+id = "aalvarezdeliveryhub.herdr-lock"
+name = "herdr-lock"
+version = "1.2.0"
+min_herdr_version = "0.9.3"
+description = "Keeps Claude's worker agents in their own tab of the same workspace and folder as the session that spawned them. Open the setup pane to install the Claude Code plugin."
+platforms = ["macos", "linux"]
+
+[[panes]]
+id = "setup"
+title = "herdr-lock: set up"
+placement = "overlay"
+command = ["bash", "herdr/setup.sh"]
+
+[[panes]]
+id = "workers"
+title = "herdr-lock: agents in this workspace"
+placement = "overlay"
+command = ["bash", "herdr/workers.sh"]
+
+[[actions]]
+id = "setup"
+title = "herdr-lock: install or update the Claude Code plugin"
+contexts = ["workspace"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin \"$HERDR_PLUGIN_ID\" --entrypoint setup"]
+
+[[actions]]
+id = "workers"
+title = "herdr-lock: show agents in this workspace"
+contexts = ["workspace"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin \"$HERDR_PLUGIN_ID\" --entrypoint workers"]

@@ -46,6 +46,14 @@ claude plugin marketplace add aalvarezdeliveryhub/herdr-lock
 claude plugin install herdr-lock@herdr-lock
 ```
 
+Or from Herdr's plugin directory ([herdr.dev/plugins](https://herdr.dev/plugins/)):
+
+```bash
+herdr plugin install aalvarezdeliveryhub/herdr-lock
+```
+
+That adds two Herdr actions. **herdr-lock: install or update the Claude Code plugin** opens a pane that runs the Claude Code install above (nothing runs until you open it). **herdr-lock: show agents in this workspace** lists the agents in the current workspace. Bind them to keys or run `herdr plugin action invoke setup --plugin aalvarezdeliveryhub.herdr-lock`.
+
 Then start new Claude sessions; hooks load when a session starts. If you have upstream herd installed, remove its user-level skill (`~/.claude/skills/herd`) so Claude isn't told to use `herd-spawn`; the session check reminds you if it's still there.
 
 ## Use
