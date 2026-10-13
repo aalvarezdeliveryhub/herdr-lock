@@ -1,0 +1,18 @@
+{
+  "name": "herdr-lock",
+  "displayName": "Herdr Lock",
+  "version": "1.1.0",
+  "description": "Keeps Herdr worker agents in the main agent's workspace and folder: one tab per worker via herdr-worker, a guard that blocks tabs, workspaces and worktrees anywhere else, and the worker rule in every Herdr session.",
+  "author": {
+    "name": "Andre Alvarez"
+  },
+  "repository": "https://github.com/aalvarezdeliveryhub/herdr-lock",
+  "license": "MIT",
+  "keywords": [
+    "herdr",
+    "agents",
+    "workers",
+    "orchestration"
+  ],
+  "homepage": "https://github.com/aalvarezdeliveryhub/herdr-lock"
+}

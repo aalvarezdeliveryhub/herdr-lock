@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""Claude Code PreToolUse hook (Bash): keep Herdr workers in the main agent's workspace and folder.
+
+The main agent's folder is the Claude Code project folder ($CLAUDE_PROJECT_DIR,
+falling back to the session cwd); folders inside it are allowed.
+
+Blocks commands that would:
+  - create a Herdr workspace or tab, or create/open a Herdr worktree
+  - split, move or start an agent in a pane outside $HERDR_WORKSPACE_ID
+  - move a pane into a new tab or workspace
+  - give a new pane a --cwd outside the main agent's folder
+  - run herdr-worker while the shell is outside the main agent's folder
+  - run upstream herd's herd-spawn or herd-up, which open tabs in whichever workspace has focus
+  - split, move or start an agent from outside a Herdr pane
+
+Commands inside `<shell> -c "..."`, `eval` and backticks are checked too.
+This is a guardrail against mistakes, not a security boundary: a program that
+talks to the Herdr socket directly is not seen.
+
+Exit status 2 blocks the tool call; the reason on stderr goes back to the agent.
+"""
+import json
+import os
+import re
+import shlex
+import sys
+
+GLOBAL_OPTS_WITH_VALUE = {"--session", "--machine", "--remote"}
+ALWAYS_BLOCKED = {
+    ("workspace", "create"),
+    ("tab", "create"),
+    ("worktree", "create"),
+    ("worktree", "open"),
+}
+PLACEMENT = {("pane", "split"), ("pane", "move"), ("agent", "start")}
+PWD_PREFIX = re.compile(r"^(\$PWD|\$\{PWD\})(?=/|$)")
+# Tab and pane IDs are opaque but workspace-qualified: "<workspace>:t<id>", "<workspace>:p<id>".
+SCOPED_ID = re.compile(r"^([^\s:/]+):[pt][^\s:/]+$")
+SEPARATORS = ";&|()`\n"
+SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+WRAPPERS = {"env", "command", "builtin", "exec", "nohup", "nice", "time", "timeout",
+            "stdbuf", "noglob", "xargs", "sudo"}
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Option values and assignments that wrappers take before the command (e.g. `timeout 5`, `nice -n 10`).
+WRAPPER_VALUE = re.compile(r"^(\d+(\.\d+)?[smhd]?|[A-Za-z_][A-Za-z0-9_]*=.*)$")
+MAX_NESTING = 4
+UPSTREAM_SPAWNERS = ("herd-spawn", "herd-up")
+# `<<EOF`, `<<-EOF`, `<< 'EOF'`, `<<"EOF"`, but not the `<<<` here-string.
+HEREDOC = re.compile(r"(?<!<)<<(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+SUBSTITUTION = re.compile(r"\$\([^)]*\)|`[^`]*`")
+
+
+def strip_heredocs(command):
+    """Drop heredoc bodies, which are text, keeping only the command substitutions
+    ($(...) and backticks) of unquoted heredocs, which the shell runs."""
+    out, pending = [], []
+    for line in command.split("\n"):
+        if pending:
+            delim, strip_tabs, quoted = pending[0]
+            if (line.lstrip("\t") if strip_tabs else line) == delim:
+                pending.pop(0)
+            elif not quoted:
+                out.extend(SUBSTITUTION.findall(line))
+            continue
+        out.append(line)
+        for dash, quote, delim in HEREDOC.findall(line):
+            pending.append((delim, dash == "-", bool(quote)))
+    return "\n".join(out)
+
+
+def tokens(command):
+    """Shell words and separators; a newline separates commands only outside quotes."""
+    lex = shlex.shlex(strip_heredocs(command), posix=True, punctuation_chars=SEPARATORS)
+    lex.whitespace = " \t\r"
+    lex.whitespace_split = True
+    try:
+        return list(lex)
+    except ValueError:
+        return command.split()
+
+
+def segments(command):
+    seg = []
+    for tok in tokens(command):
+        if tok and set(tok) <= set(SEPARATORS):
+            if seg:
+                yield seg
+            seg = []
+        else:
+            seg.append(tok)
+    if seg:
+        yield seg
+
+
+def command_words(seg):
+    """The segment from the word in command position on, past assignments and wrappers."""
+    i = 0
+    while i < len(seg):
+        word = seg[i]
+        if ASSIGNMENT.match(word):
+            i += 1
+        elif os.path.basename(word) in WRAPPERS:
+            i += 1
+            while i < len(seg) and (seg[i].startswith("-") or WRAPPER_VALUE.match(seg[i])):
+                i += 1
+        else:
+            return seg[i:]
+    return []
+
+
+def args_after(seg, program):
+    words = command_words(seg)
+    if words and os.path.basename(words[0]) == program:
+        return words[1:]
+    return None
+
+
+def option_values(args, name):
+    values = []
+    for i, tok in enumerate(args):
+        if tok == name and i + 1 < len(args):
+            values.append(args[i + 1])
+        elif tok.startswith(name + "="):
+            values.append(tok[len(name) + 1:])
+    return values
+
+
+def inside(path, root):
+    """Whether path is root or below it, comparing folders by identity, not spelling:
+    macOS volumes are case-insensitive, so "Projects" and "projects" are one folder."""
+    try:
+        root_id = (os.stat(root).st_dev, os.stat(root).st_ino)
+    except OSError:
+        return False
+    current = os.path.realpath(path)
+    while True:
+        try:
+            st = os.stat(current)
+            if (st.st_dev, st.st_ino) == root_id:
+                return True
+        except OSError:
+            pass
+        parent = os.path.dirname(current)
+        if parent == current:
+            return False
+        current = parent
+
+
+def resolve(value, shell_cwd):
+    value = PWD_PREFIX.sub(lambda _: shell_cwd, value)
+    return os.path.join(shell_cwd, os.path.expanduser(value))
+
+
+def check_herdr(args, own_workspace, main_dir, shell_cwd):
+    while args and args[0] in GLOBAL_OPTS_WITH_VALUE:
+        args = args[2:]
+    if len(args) < 2 or "-h" in args or "--help" in args:
+        return None
+    verb = (args[0], args[1])
+    if verb in ALWAYS_BLOCKED:
+        return (
+            f"`herdr {verb[0]} {verb[1]}` is blocked: workers open only through "
+            "`herdr-worker <name> \"<task>\"`, which gives each one its own tab in the main agent's "
+            "workspace and folder. If the user explicitly wants a new "
+            f"{verb[0]}, ask them to run the command themselves."
+        )
+    if verb not in PLACEMENT:
+        return None
+    if not own_workspace:
+        return (
+            f"`herdr {verb[0]} {verb[1]}` is blocked outside a Herdr pane "
+            "($HERDR_WORKSPACE_ID is unset), because it would target whichever pane has focus."
+        )
+    rest = args[2:]
+    for flag in ("--new-tab", "--new-workspace"):
+        if flag in rest:
+            return (
+                f"`herdr {verb[0]} {verb[1]} {flag}` is blocked: workers stay in the main "
+                "agent's workspace, in the tabs herdr-worker opened for them."
+            )
+    targets = [(t, m.group(1)) for t in rest for m in [SCOPED_ID.match(t)] if m]
+    targets += [(w, w) for w in option_values(rest, "--workspace")]
+    for target, workspace in targets:
+        if workspace != own_workspace:
+            return (
+                f"`herdr {verb[0]} {verb[1]}` targets {target}, outside this agent's workspace "
+                f"({own_workspace}). Workers stay in the main agent's workspace."
+            )
+    if verb == ("pane", "split"):
+        for value in option_values(rest, "--cwd"):
+            if not inside(resolve(value, shell_cwd), main_dir):
+                return (
+                    f"`herdr pane split --cwd {value}` is blocked: new panes open in the main "
+                    f"agent's folder ({main_dir}) or a folder inside it."
+                )
+    return None
+
+
+def check_worker(main_dir, shell_cwd):
+    if not inside(shell_cwd, main_dir):
+        return (
+            f"`herdr-worker` is blocked: the shell is in {shell_cwd}, outside the main agent's "
+            f"folder ({main_dir}). cd back into it first; use -C <subdir> for a folder inside it."
+        )
+    return None
+
+
+def wrapped_command(seg):
+    """The command string run by `<shell> -c "..."` or `eval ...` in this segment, if any."""
+    words = command_words(seg)
+    if not words:
+        return None
+    if words[0] == "eval":
+        return " ".join(words[1:])
+    if os.path.basename(words[0]) in SHELLS:
+        for j in range(1, len(words) - 1):
+            flag = words[j]
+            if not flag.startswith("-") or flag.startswith("--"):
+                break
+            if "c" in flag[1:]:
+                return words[j + 1]
+    return None
+
+
+def check_command(command, own_workspace, main_dir, shell_cwd, depth=0):
+    for seg in segments(command):
+        if seg[0] == "cd":
+            target = seg[1] if len(seg) > 1 else "~"
+            shell_cwd = resolve(target, shell_cwd)
+            continue
+        reason = None
+        inner = wrapped_command(seg)
+        if inner is not None and depth < MAX_NESTING:
+            reason = check_command(inner, own_workspace, main_dir, shell_cwd, depth + 1)
+        herdr = args_after(seg, "herdr")
+        if reason is None and herdr is not None:
+            reason = check_herdr(herdr, own_workspace, main_dir, shell_cwd)
+        if reason is None and args_after(seg, "herdr-worker") is not None:
+            reason = check_worker(main_dir, shell_cwd)
+        for upstream in UPSTREAM_SPAWNERS:
+            if reason is None and args_after(seg, upstream) is not None:
+                reason = (
+                    f"`{upstream}` (upstream herd) is blocked: it opens tabs in whichever Herdr "
+                    "workspace has focus. Use `herdr-worker <name> \"<task>\"` instead."
+                )
+        if reason:
+            return reason
+    return None
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+    except ValueError:
+        return 0
+    command = (payload.get("tool_input") or {}).get("command") or ""
+    if "herd" not in command:
+        return 0
+    shell_cwd = payload.get("cwd") or os.getcwd()
+    reason = check_command(
+        command,
+        os.environ.get("HERDR_WORKSPACE_ID", ""),
+        os.environ.get("CLAUDE_PROJECT_DIR") or shell_cwd,
+        shell_cwd,
+    )
+    if reason:
+        print(f"herdr-guard: {reason}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

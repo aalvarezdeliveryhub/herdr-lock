@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# herdr-worker [-k kind] [-a "extra agent args"] [-C subdir] <name> <task...>
+#   Spawn a worker agent in its own new tab of the caller's Herdr workspace, in the
+#   caller's folder or (with -C) a folder inside it. Claude workers start in auto
+#   mode. The worker writes its report to /tmp/herd/<name>.md.
+# herdr-worker list
+#   List the workers in the caller's workspace.
+# herdr-worker close <name>
+#   Close a worker's tab in the caller's workspace.
+#
+# Exit status: 0 ok, 1 Herdr error, 2 refused (bad arguments, name in use, outside
+# the caller's workspace or folder), 3 the worker started but is blocked at startup
+# (e.g. a folder-trust prompt) and has not received its task.
+set -euo pipefail
+
+if [ -z "${HERDR_PANE_ID:-}" ] || [ -z "${HERDR_WORKSPACE_ID:-}" ]; then
+  echo "herdr-worker: run from inside a Herdr pane (HERDR_PANE_ID/HERDR_WORKSPACE_ID unset)" >&2
+  exit 1
+fi
+
+agents_json() { herdr agent list | jq -c '.result.agents'; }
+
+list_workers() {
+  agents_json | jq -r --arg ws "$HERDR_WORKSPACE_ID" --arg me "$HERDR_PANE_ID" '
+    .[] | select(.workspace_id == $ws and .pane_id != $me)
+    | "\(.name)\t\(.tab_id)\t\(.agent_status // "-")\t\(.cwd // "-")"'
+}
+
+close_worker() {
+  local name=$1 found
+  found=$(agents_json | jq -c --arg n "$name" '.[] | select(.name == $n)')
+  if [ -z "$found" ]; then
+    echo "herdr-worker: no worker named $name" >&2; exit 2
+  fi
+  if [ "$(jq -r .workspace_id <<<"$found")" != "$HERDR_WORKSPACE_ID" ]; then
+    echo "herdr-worker: $name is in another workspace; only workers in this one can be closed here" >&2; exit 2
+  fi
+  if [ "$(jq -r .pane_id <<<"$found")" = "$HERDR_PANE_ID" ]; then
+    echo "herdr-worker: $name is running in your own tab; refusing to close it" >&2; exit 2
+  fi
+  herdr tab close "$(jq -r .tab_id <<<"$found")" >/dev/null
+  echo "closed $name ($(jq -r .tab_id <<<"$found"))"
+}
+
+case "${1:-}" in
+  list) list_workers; exit 0 ;;
+  close)
+    [ $# -eq 2 ] || { echo "usage: herdr-worker close <name>" >&2; exit 2; }
+    close_worker "$2"; exit 0 ;;
+esac
+
+kind=claude
+extra=""
+dir=$PWD
+while getopts "k:a:C:" opt; do
+  case $opt in
+    k) kind=$OPTARG ;;
+    a) extra=$OPTARG ;;
+    C) dir=$OPTARG ;;
+    *) exit 2 ;;
+  esac
+done
+shift $((OPTIND - 1))
+if [ $# -lt 2 ]; then
+  echo "usage: herdr-worker [-k kind] [-a \"agent args\"] [-C subdir] <name> <task...> | list | close <name>" >&2
+  exit 2
+fi
+if [ $# -ge 3 ] && [ -d "$2" ]; then
+  echo "herdr-worker: <cwd> is not an argument; use -C <subdir> for a folder inside $PWD" >&2
+  exit 2
+fi
+dir=$(cd "$dir" 2>/dev/null && pwd -P) || { echo "herdr-worker: -C folder not found" >&2; exit 2; }
+here=$(pwd -P)
+case "$dir/" in
+  "$here/"*) ;;
+  *) echo "herdr-worker: -C $dir is outside the caller's folder ($here)" >&2; exit 2 ;;
+esac
+name=$1; shift
+task="$*"
+if [ -n "$(agents_json | jq -r --arg n "$name" '.[] | select(.name == $n) | .name')" ]; then
+  echo "herdr-worker: the name $name is already in use by a Herdr agent (names are unique across all workspaces); pick another" >&2
+  exit 2
+fi
+if [ -z "$extra" ] && [ "$kind" = claude ]; then
+  extra="--permission-mode auto"
+fi
+mkdir -p /tmp/herd
+report=/tmp/herd/$name.md
+task="$task
+
+When you are completely done, write a full report (what you did, files touched, how you verified it) to $report. Keep your terminal reply to a short summary."
+
+created=$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$dir" --label "$name" --no-focus)
+pane=$(jq -r '.result.root_pane.pane_id' <<<"$created")
+tab=$(jq -r '.result.tab.tab_id' <<<"$created")
+# $extra is deliberately word-split into agent args
+if ! start_err=$(herdr agent start "$name" --kind "$kind" --pane "$pane" -- $extra 2>&1 >/dev/null); then
+  if [ "$(jq -r '.error.code // empty' <<<"$start_err" 2>/dev/null)" = agent_not_ready ]; then
+    printf '%s\n' "$task" > "/tmp/herd/$name.task"
+    if herdr pane read "$pane" --source visible 2>/dev/null | grep -qi "trust"; then
+      echo "herdr-worker: $name is waiting at a folder-trust prompt in tab $tab ($dir). Ask the user to approve it there, then send the task with: herdr agent prompt $name \"\$(cat /tmp/herd/$name.task)\"" >&2
+    else
+      echo "herdr-worker: $name is blocked during startup in tab $tab; read it with: herdr agent read $name --source visible. Once it is ready, send the task with: herdr agent prompt $name \"\$(cat /tmp/herd/$name.task)\"" >&2
+    fi
+    exit 3
+  fi
+  herdr tab close "$tab" >/dev/null 2>&1 || true
+  echo "herdr-worker: $name did not start, so its tab $tab was closed: $start_err" >&2
+  exit 1
+fi
+herdr agent prompt "$name" "$task" >/dev/null
+echo "worker=$name kind=$kind tab=$tab pane=$pane cwd=$dir report=$report"

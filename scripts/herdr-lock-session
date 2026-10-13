@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# herdr-lock-session [--hook]
+# Claude Code SessionStart hook of the herdr-lock plugin.
+# Inside Herdr (HERDR_ENV=1) it prints the Herdr workers rule into the session.
+# Wherever herdr is installed it checks that herdr-guard behaves, that the Herdr
+# CLI still matches what herdr-guard was written against, and that no user-level
+# herd skill tells agents to use upstream herd-spawn; problems are printed as a
+# warning. Without --hook, it exits 1 when there are problems.
+set -uo pipefail
+hook_mode=0
+[ "${1:-}" = "--hook" ] && hook_mode=1
+here=$(cd "$(dirname "$0")" && pwd)
+guard="$here/herdr-guard"
+
+command -v herdr >/dev/null || exit 0
+[ "${HERDR_ENV:-}" = "1" ] && cat "$here/herdr-workers-rule.md"
+
+problems=()
+problem() { problems+=("$1"); }
+
+# Herdr CLI surface herdr-guard was written against (herdr 0.9.3).
+expected_surface='top: agent api channel config integration machine notification pane session tab workspace worktree
+workspace: close create focus get list rename report-metadata
+worktree: create list open remove
+tab: close create focus get list rename
+pane: close current edges focus get input layout list move neighbor process-info read release-agent rename report-agent report-agent-session report-metadata resize run send-keys send-text split swap wait-output zoom
+agent: attach explain focus get list prompt read rename send-keys start wait
+pane split: --current --cwd --direction --env --focus --no-focus --pane --ratio --right-click
+pane move: --focus --label --new-tab --new-workspace --no-focus --ratio --split --tab --tab-label --target-pane --workspace
+tab create: --cwd --env --focus --label --no-focus --workspace
+workspace create: --cwd --env --focus --label --no-focus
+worktree create: --base --branch --cwd --focus --label --no-focus --path --trust-repository --workspace'
+
+join() { sort -u | tr '\n' ' ' | sed 's/ $//'; }
+current_surface() {
+  printf 'top: %s\n' "$(herdr --help 2>&1 | sed -n 's/^ *herdr \([a-z-]*\) <subcommand>.*/\1/p' | join)"
+  local g c
+  for g in workspace worktree tab pane agent; do
+    printf '%s: %s\n' "$g" "$(herdr "$g" --help 2>&1 | awk '/^Commands:/{f=1;next} f&&/^  [a-z]/{print $1} f&&/^$/{exit}' | join)"
+  done
+  for c in "pane split" "pane move" "tab create" "workspace create" "worktree create"; do
+    # shellcheck disable=SC2086
+    printf '%s: %s\n' "$c" "$(herdr $c -h 2>&1 | grep -oE '^ +--[a-z-]+' | tr -d ' ' | join)"
+  done
+}
+
+# Commands and options Herdr has gained since herdr-guard was written: "<group>: <item> ...".
+surface_additions() {
+  local line group expected_items item added
+  while IFS= read -r line; do
+    group=${line%%:*}
+    expected_items=" $(printf '%s\n' "$expected_surface" | sed -n "s/^$group: //p") "
+    added=""
+    for item in ${line#*: }; do
+      case "$expected_items" in *" $item "*) ;; *) added="$added $item" ;; esac
+    done
+    [ -n "$added" ] && printf '%s:%s\n' "$group" "$added"
+  done < <(current_surface)
+}
+
+# Check each Herdr version once; remember it in the plugin's data folder.
+herdr_version=$(herdr --version 2>/dev/null | head -n1)
+checked="${CLAUDE_PLUGIN_DATA:-}/herdr-cli-checked"
+if [ -z "${CLAUDE_PLUGIN_DATA:-}" ] || [ "$(cat "$checked" 2>/dev/null)" != "$herdr_version" ]; then
+  additions=$(surface_additions)
+  [ -n "$additions" ] && problem "$herdr_version has commands or options herdr-guard was not written against. If any of them can open a tab, a workspace or a worktree, workers could get around the lock until herdr-lock is updated; otherwise there is nothing to do. This is reported once per Herdr version:
+$additions"
+  if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
+    mkdir -p "$CLAUDE_PLUGIN_DATA" && printf '%s\n' "$herdr_version" > "$checked"
+  fi
+fi
+
+for tool in jq python3; do
+  command -v "$tool" >/dev/null || problem "$tool is not installed; herdr-worker and herdr-guard need it"
+done
+
+if grep -q 'herd-spawn' "$HOME/.claude/skills/herd/SKILL.md" 2>/dev/null; then
+  problem "~/.claude/skills/herd is upstream herd's skill, which tells agents to use herd-spawn (blocked by herdr-guard); remove that folder and use this plugin's herd skill"
+fi
+
+expect_guard() {
+  local want=$1 ws=$2 cmd=$3 got
+  printf '%s' "$(jq -nc --arg c "$cmd" --arg d "$HOME" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}')" \
+    | HERDR_WORKSPACE_ID=$ws CLAUDE_PROJECT_DIR=$HOME "$guard" >/dev/null 2>&1
+  got=$?
+  [ "$got" = "$want" ] || problem "herdr-guard returned $got (expected $want) for: $cmd"
+}
+if [ -x "$guard" ]; then
+  expect_guard 2 w1 'herdr tab create --no-focus'
+  expect_guard 2 w1 'herdr workspace create'
+  expect_guard 2 w1 'herdr worktree create --branch x'
+  expect_guard 2 wH 'herdr pane split wX:p1 --direction right'
+  expect_guard 2 w1 'herdr pane split --current --cwd /'
+  expect_guard 2 w1 'herdr pane move w1:p2 --new-tab'
+  expect_guard 2 w1 'herd-spawn a task'
+  expect_guard 0 w1 'herdr-worker a task'
+  expect_guard 0 w1 'herdr agent list'
+else
+  problem "$guard is missing or not executable"
+fi
+
+[ ${#problems[@]} -eq 0 ] && exit 0
+echo "herdr-lock: the Herdr worker lock needs attention. Tell the user before spawning any Herdr workers:"
+for p in "${problems[@]}"; do printf -- '- %s\n' "$p"; done
+[ $hook_mode = 1 ] && exit 0
+exit 1

@@ -1,0 +1,14 @@
+{
+  "name": "herdr-lock",
+  "description": "The herdr-lock plugin: Herdr worker agents stay in the main agent's workspace and folder.",
+  "owner": {
+    "name": "Andre Alvarez"
+  },
+  "plugins": [
+    {
+      "name": "herdr-lock",
+      "source": "./",
+      "description": "Keep Herdr worker agents in the main agent's workspace and folder."
+    }
+  ]
+}
