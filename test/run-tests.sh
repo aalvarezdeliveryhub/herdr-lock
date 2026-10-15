@@ -218,7 +218,11 @@ out=$(worker "$main" close nobody 2>&1); rc=$?
 unset FAKE_HERDR_LOG FAKE_HERDR_STATE
 
 # --- plugin: manifest, SessionStart script (throwaway HOME, real herdr help) --
-claude plugin validate "$repo" 2>&1 | grep -q "Validation passed" && ok || bad "claude plugin validate should pass"
+if command -v claude >/dev/null; then
+  claude plugin validate "$repo" 2>&1 | grep -q "Validation passed" && ok || bad "claude plugin validate should pass"
+else
+  echo "SKIP: claude plugin validate (claude is not installed)"
+fi
 fake="$work/home"
 mkdir -p "$fake"
 out=$(HOME="$fake" HERDR_ENV=1 "$repo/scripts/herdr-lock-session" 2>&1); rc=$?

@@ -2,6 +2,8 @@
 
 ## 1.2.0 (2026-10-13)
 
+- A daily GitHub Actions job tests each new Herdr release and records it when it passes, or opens an issue when the guard needs review. Tests also run on every push.
+- Tested with Herdr 0.9.5 (no new commands or options the guard needs to know about since 0.9.3).
 - Listed in Herdr's plugin directory: `herdr-plugin.toml` adds a **set up** pane that installs or updates the Claude Code plugin when you open it, and an **agents** pane that lists the agents in the current workspace. Nothing runs at install time.
 
 ## 1.1.0 (2026-10-13)

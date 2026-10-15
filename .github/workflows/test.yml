@@ -1,0 +1,26 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the latest Herdr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/herdr"
+          gh release download -R herdrdev/herdr -p herdr-linux-x86_64 -D "$RUNNER_TEMP/herdr"
+          mv "$RUNNER_TEMP/herdr/herdr-linux-x86_64" "$RUNNER_TEMP/herdr/herdr"
+          chmod +x "$RUNNER_TEMP/herdr/herdr"
+          echo "$RUNNER_TEMP/herdr" >> "$GITHUB_PATH"
+      - run: herdr --version
+      - run: test/run-tests.sh

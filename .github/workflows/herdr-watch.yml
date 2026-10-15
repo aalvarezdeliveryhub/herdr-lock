@@ -1,0 +1,117 @@
+name: herdr-watch
+
+# Daily: when Herdr publishes a release newer than .github/herdr-tested-version,
+# run the tests and the CLI check against it. If both pass, record the new
+# version through a pull request that this workflow merges. If anything fails,
+# or Herdr added commands the guard hasn't been reviewed against, open an issue
+# instead: guard changes need a person to review them.
+
+on:
+  schedule:
+    - cron: "17 13 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Run the checks even if the latest Herdr release is already recorded
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: herdr-watch
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare the latest Herdr release with the tested one
+        id: versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          latest=$(gh release view -R herdrdev/herdr --json tagName -q .tagName | sed 's/^v//')
+          tested=$(cat .github/herdr-tested-version)
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+          echo "latest Herdr: $latest, tested: $tested"
+          if [ "$latest" != "$tested" ] || [ "$FORCE" = "true" ]; then echo "check=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Install Herdr ${{ steps.versions.outputs.latest }}
+        if: steps.versions.outputs.check == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/herdr"
+          gh release download "v${{ steps.versions.outputs.latest }}" -R herdrdev/herdr -p herdr-linux-x86_64 -D "$RUNNER_TEMP/herdr"
+          mv "$RUNNER_TEMP/herdr/herdr-linux-x86_64" "$RUNNER_TEMP/herdr/herdr"
+          chmod +x "$RUNNER_TEMP/herdr/herdr"
+          echo "$RUNNER_TEMP/herdr" >> "$GITHUB_PATH"
+
+      - name: Run the tests and the Herdr CLI check
+        if: steps.versions.outputs.check == 'true'
+        id: checks
+        run: |
+          herdr --version
+          test/run-tests.sh > "$RUNNER_TEMP/tests.log" 2>&1
+          echo "tests=$?" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/home" "$RUNNER_TEMP/data"
+          HOME="$RUNNER_TEMP/home" CLAUDE_PLUGIN_DATA="$RUNNER_TEMP/data" scripts/herdr-lock-session > "$RUNNER_TEMP/cli-check.log" 2>&1
+          echo "cli=$?" >> "$GITHUB_OUTPUT"
+          tail -n 20 "$RUNNER_TEMP/tests.log"
+          cat "$RUNNER_TEMP/cli-check.log"
+
+      - name: Record the newly tested Herdr version
+        if: >-
+          steps.versions.outputs.check == 'true' &&
+          steps.checks.outputs.tests == '0' && steps.checks.outputs.cli == '0' &&
+          steps.versions.outputs.latest != steps.versions.outputs.tested
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+        run: |
+          branch="herdr-tested-$LATEST"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          echo "$LATEST" > .github/herdr-tested-version
+          sed -i "s/^- Herdr (tested on [0-9.]*)/- Herdr (tested on $LATEST)/" README.md
+          git commit -am "Tested with Herdr $LATEST"
+          git push -u origin "$branch"
+          gh pr create --head "$branch" --title "Tested with Herdr $LATEST" \
+            --body "Herdr $LATEST passed the herdr-lock tests and adds no commands or options the guard hasn't been reviewed against. Opened and merged by the herdr-watch workflow."
+          gh pr merge "$branch" --squash --delete-branch
+
+      - name: Open an issue for review
+        if: >-
+          steps.versions.outputs.check == 'true' &&
+          (steps.checks.outputs.tests != '0' || steps.checks.outputs.cli != '0')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+        run: |
+          title="Herdr $LATEST needs review"
+          if [ -n "$(gh issue list --state open --search "\"$title\" in:title" --json number -q '.[].number')" ]; then
+            echo "An open issue already covers Herdr $LATEST."
+            exit 0
+          fi
+          {
+            echo "The herdr-watch workflow found something to review for Herdr $LATEST."
+            echo
+            echo "**Herdr CLI check** (new commands or options the guard hasn't been reviewed against, or a guard self-test failure):"
+            echo '```'
+            cat "$RUNNER_TEMP/cli-check.log"
+            echo '```'
+            echo "**Tests** (last 40 lines):"
+            echo '```'
+            tail -n 40 "$RUNNER_TEMP/tests.log"
+            echo '```'
+            echo "If a new command can open a tab, a workspace or a worktree, add it to scripts/herdr-guard with tests, update expected_surface in scripts/herdr-lock-session, bump the version and record $LATEST in .github/herdr-tested-version."
+          } > "$RUNNER_TEMP/issue.md"
+          gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue.md"

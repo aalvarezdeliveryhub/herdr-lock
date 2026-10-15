@@ -24,7 +24,7 @@ When a Claude session in Herdr starts helpers, it's easy for them to land in the
 ## Requirements
 
 - Claude Code with plugin support (tested on 2.1.295)
-- Herdr (tested on 0.9.3), with Claude sessions started inside Herdr panes
+- Herdr (tested on 0.9.5), with Claude sessions started inside Herdr panes
 - `jq` and `python3` (3.9 or later)
 - macOS (tested). Linux should work but hasn't been tested yet.
 
@@ -54,7 +54,9 @@ herdr plugin install aalvarezdeliveryhub/herdr-lock
 
 That adds two Herdr actions. **herdr-lock: install or update the Claude Code plugin** opens a pane that runs the Claude Code install above (nothing runs until you open it). **herdr-lock: show agents in this workspace** lists the agents in the current workspace. Bind them to keys or run `herdr plugin action invoke setup --plugin aalvarezdeliveryhub.herdr-lock`.
 
-Then start new Claude sessions; hooks load when a session starts. If you have upstream herd installed, remove its user-level skill (`~/.claude/skills/herd`) so Claude isn't told to use `herd-spawn`; the session check reminds you if it's still there.
+Then start new Claude sessions; hooks load when a session starts.
+
+To get updates automatically, turn on auto-update for the `herdr-lock` marketplace: `/plugin` → **Marketplaces** → herdr-lock → **Enable auto-update**. Claude Code then installs new versions in the background and loads them in your next session. If you have upstream herd installed, remove its user-level skill (`~/.claude/skills/herd`) so Claude isn't told to use `herd-spawn`; the session check reminds you if it's still there.
 
 ## Use
 
@@ -98,6 +100,10 @@ herdr-worker close <name>
 - `test/run-tests.sh`: 133 checks, from guard cases (wrapped commands, heredocs, other workspaces, folders spelled with different capitals, help flags) to `herdr-worker` behaviour against a stand-in for Herdr (one tab per worker, duplicate names, failed and stuck starts, `list`/`close`), the session check, and `claude plugin validate`.
 - `test/live-checks.sh`: fresh `claude -p` sessions with the plugin loaded, confirming the rule appears only inside Herdr and beats a conflicting `CLAUDE.md`, a delegated ticket goes to a `herdr-worker` tab rather than the built-in Agent tool, the guard blocks, and `herdr-worker` is on the PATH. If herdr-lock is also installed, disable that copy first to test only your checkout.
 - Live in Herdr: three workspaces, each with a Claude session spawning five workers at the same time while focus switched between workspaces every two seconds. All 15 workers opened in their own session's workspace and folder, one tab each, and the other workspaces were untouched. With the same focus switching, upstream `herd-spawn` put its worker in the wrong workspace. In separate runs, agents tried 140 ways to get around the guard, from plain commands to `bash -c`, `eval`, backticks, other workspaces' IDs and `cd /tmp && …`, and none got through.
+
+## Keeping up with Herdr
+
+A daily GitHub Actions job (`.github/workflows/herdr-watch.yml`) watches Herdr's releases. When a new version comes out, it runs the test suite and the CLI check against it. If everything passes and Herdr added nothing the guard hasn't been reviewed against, it records the new version in `.github/herdr-tested-version` and the README automatically. Otherwise it opens an issue listing what changed, because a new way to open tabs, workspaces or worktrees needs a guard update that someone should review. Every push also runs the tests against the latest Herdr.
 
 ## Update and uninstall
 
