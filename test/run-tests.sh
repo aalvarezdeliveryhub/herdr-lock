@@ -287,10 +287,10 @@ rm -f "$fake/.claude/skills/herd/SKILL.md"
 
 broken="$work/broken-plugin/scripts"
 mkdir -p "$broken"
-cp "$repo/scripts/herdr-lock-session" "$repo/scripts/herdr-workers-rule.md" "$broken/"
+cp "$repo/scripts/herdr-lock-session" "$repo/scripts/herdr-workers-rule.md" "$repo/scripts/herdr-workspace-for" "$broken/"
 printf '#!/bin/sh\nexit 0\n' >"$broken/herdr-guard"; chmod +x "$broken/herdr-guard"
 out=$(HOME="$fake" "$broken/herdr-lock-session" 2>&1)
-grep -q "herdr-guard returned 0 (expected 2)" <<<"$out" && ok || bad "a guard that lets everything through should be flagged"
+grep -q "herdr-guard returned 0 (expected 2)" <<<"$out" && ! grep -q "Broken pipe" <<<"$out" && ok || bad "a guard that lets everything through should be flagged as returning 0: $out"
 
 # Herdr CLI drift: warn only about additions, once per Herdr version, and remember clean versions
 real_herdr=$(command -v herdr)

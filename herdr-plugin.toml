@@ -5,7 +5,7 @@
 # workspace. Nothing runs at install time.
 id = "aalvarezdeliveryhub.herdr-lock"
 name = "herdr-lock"
-version = "1.2.0"
+version = "1.2.1"
 min_herdr_version = "0.9.3"
 description = "Keeps Claude's worker agents in their own tab of the same workspace and folder as the session that spawned them. Open the setup pane to install the Claude Code plugin."
 platforms = ["macos", "linux"]
