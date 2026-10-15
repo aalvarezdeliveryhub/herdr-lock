@@ -55,6 +55,8 @@ def new_id(state, ws, kind):
     return f"{ws}:{kind}{n}"
 
 
+if os.environ.get("FAKE_HERDR_DOWN"):
+    fail("server_unavailable", "herdr server is not running")
 state = load()
 cmd = tuple(args[:2])
 
@@ -95,6 +97,15 @@ elif cmd == ("agent", "get"):
     if args[2] not in state["agents"]:
         fail("agent_not_found", f"agent target {args[2]} not found")
     print(json.dumps({"result": {"agent": state["agents"][args[2]]}}))
+elif cmd == ("workspace", "list"):
+    labels = state.get("labels", {})
+    ids = sorted({t.split(":")[0] for t in state["tabs"]})
+    print(json.dumps({"result": {"workspaces": [{"workspace_id": w, "label": labels.get(w, w)} for w in ids]}}))
+elif cmd == ("pane", "list"):
+    ws = opt("--workspace")
+    panes = [{"pane_id": p, "tab_id": t, "cwd": state.get("cwd", {}).get(p)}
+             for t, ps in state["tabs"].items() if t.startswith(ws + ":") for p in ps]
+    print(json.dumps({"result": {"panes": panes}}))
 elif cmd == ("pane", "read"):
     print(os.environ.get("FAKE_PANE_TEXT", ""))
 else:

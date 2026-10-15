@@ -154,12 +154,12 @@ worker() { (cd "$1" && shift && HERDR_PANE_ID=wT:p1 HERDR_TAB_ID=wT:t1 HERDR_WOR
 spawn() { worker "$@" >/dev/null 2>&1; }
 ntabs() { python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["tabs"]))' "$FAKE_HERDR_STATE"; }
 
-(cd "$main" && env -u HERDR_PANE_ID -u HERDR_WORKSPACE_ID PATH="$stub:$PATH" "$repo/bin/herdr-worker" a task >/dev/null 2>&1)
-[ $? = 1 ] && ok || bad "herdr-worker outside Herdr should exit 1"
+(cd "$work/elsewhere" && env -u HERDR_PANE_ID -u HERDR_WORKSPACE_ID PATH="$stub:$PATH" "$repo/bin/herdr-worker" a task >/dev/null 2>&1)
+[ $? = 2 ] && ok || bad "herdr-worker outside Herdr, in a folder with no Herdr workspace, should exit 2"
 spawn "$main" a "$main" task; [ $? = 2 ] && ok || bad "herdr-worker old <cwd> syntax should exit 2"
 spawn "$main" -C "$work/elsewhere" a task; [ $? = 2 ] && ok || bad "herdr-worker -C outside should exit 2"
 spawn "$main" -C .. a task; [ $? = 2 ] && ok || bad "herdr-worker -C .. should exit 2"
-[ ! -s "$FAKE_HERDR_LOG" ] && ok || bad "refused spawns must not call herdr"
+! grep -q -E "^herdr (tab create|agent start)" "$FAKE_HERDR_LOG" && ok || bad "refused spawns must not open tabs or start agents"
 
 spawn "$main" w1 "task 1" && ok || bad "first spawn failed"
 grep -qx "herdr tab create --workspace wT --cwd $main --label w1 --no-focus" "$FAKE_HERDR_LOG" \
@@ -217,6 +217,51 @@ out=$(worker "$main" close nobody 2>&1); rc=$?
 [ $rc = 2 ] && grep -q "no worker named" <<<"$out" && ok || bad "close of an unknown name should fail clearly (rc=$rc): $out"
 unset FAKE_HERDR_LOG FAKE_HERDR_STATE
 
+# --- outside Herdr: find the Herdr workspace for a folder ----------------------
+real_herdr=$(command -v herdr)
+hybrid="$work/hybrid"
+mkdir -p "$hybrid"
+cat >"$hybrid/herdr" <<HEOF
+#!/usr/bin/env bash
+for a in "\$@"; do case "\$a" in -h|--help|--version) exec "$real_herdr" "\$@" ;; esac; done
+exec python3 -I "$repo/test/fake-herdr.py" "\$@"
+HEOF
+chmod +x "$hybrid/herdr"
+export FAKE_HERDR_LOG="$work/herdr3.log" FAKE_HERDR_STATE="$work/herdr3-state.json"
+python3 -I - "$FAKE_HERDR_STATE" "$main" "$work/elsewhere" "$HOME" <<'PY'
+import json, sys
+p, proj, other, home = sys.argv[1:]
+json.dump({"next": 10, "labels": {"wA": "proj-a", "wB": "other", "wH": "home"},
+           "tabs": {"wA:t1": ["wA:p1"], "wB:t1": ["wB:p1"], "wH:t1": ["wH:p1"]},
+           "cwd": {"wA:p1": proj, "wB:p1": other, "wH:p1": home}, "agents": {}}, open(p, "w"))
+PY
+find_ws() { PATH="$hybrid:$PATH" "$repo/scripts/herdr-workspace-for" "$1"; }
+[ "$(find_ws "$main" | cut -f1)" = wA ] && ok || bad "a project folder maps to the workspace whose pane is there"
+[ "$(find_ws "$main/site-a" | cut -f1)" = wA ] && ok || bad "a subfolder maps to the workspace of its nearest parent"
+[ "$(find_ws "$work/elsewhere" | cut -f1)" = wB ] && ok || bad "another folder maps to its own workspace"
+[ -z "$(find_ws "$work")" ] && ok || bad "a folder above every workspace (or only under \$HOME's workspace) has no match"
+[ -z "$(FAKE_HERDR_DOWN=1 find_ws "$main")" ] && ok || bad "no match when Herdr isn't running"
+
+outside() { (cd "$1" && shift && env -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID PATH="$hybrid:$PATH" "$repo/bin/herdr-worker" "$@"); }
+out=$(outside "$main" d1 "task" 2>&1); rc=$?
+[ $rc = 0 ] && grep -q "^herdr tab create --workspace wA --cwd $main --label d1 --no-focus" "$FAKE_HERDR_LOG" \
+  && ok || bad "outside Herdr, herdr-worker opens the tab in the folder's Herdr workspace (rc=$rc): $out"
+out=$(outside "$work" d2 "task" 2>&1); rc=$?
+[ $rc = 2 ] && grep -q "open this folder in Herdr" <<<"$out" && ok || bad "outside Herdr with no matching workspace, herdr-worker refuses (rc=$rc): $out"
+outside "$main" list 2>&1 | grep -q "^d1" && ok || bad "outside Herdr, list shows the folder's workspace"
+
+mkdir -p "$work/home-outside"
+sess() { HOME="$work/home-outside" PATH="$hybrid:$PATH" "$repo/scripts/herdr-lock-session" 2>&1; }
+out=$(unset HERDR_ENV; CLAUDE_PROJECT_DIR="$main" sess); rc=$?
+[ $rc = 0 ] && grep -q '^## Herdr workers (herdr-lock plugin)' <<<"$out" && grep -q "outside Herdr" <<<"$out" && grep -q "proj-a" <<<"$out" \
+  && grep -q "herdr-worker" <<<"$out" && ! grep -q "needs attention" <<<"$out" && ok || bad "a session outside Herdr in a folder Herdr has a workspace for gets the rule naming it (rc=$rc): $out"
+out=$(unset HERDR_ENV; CLAUDE_PROJECT_DIR="$work" sess); rc=$?
+[ $rc = 0 ] && grep -q "open this folder in Herdr" <<<"$out" && ! grep -q "herdr-worker \[" <<<"$out" \
+  && ok || bad "a session outside Herdr with no matching workspace is told to ask the user to open the folder in Herdr (rc=$rc): $out"
+out=$(HERDR_ENV=1 CLAUDE_PROJECT_DIR="$main" sess); rc=$?
+grep -q "runs inside Herdr" <<<"$out" && ok || bad "a session inside Herdr is told so: $out"
+unset FAKE_HERDR_LOG FAKE_HERDR_STATE
+
 # --- plugin: manifest, SessionStart script (throwaway HOME, real herdr help) --
 if command -v claude >/dev/null; then
   claude plugin validate "$repo" 2>&1 | grep -q "Validation passed" && ok || bad "claude plugin validate should pass"
@@ -228,8 +273,6 @@ mkdir -p "$fake"
 out=$(HOME="$fake" HERDR_ENV=1 "$repo/scripts/herdr-lock-session" 2>&1); rc=$?
 [ $rc = 0 ] && grep -q '^## Herdr workers (herdr-lock plugin)' <<<"$out" && ! grep -q "needs attention" <<<"$out" \
   && ok || bad "inside Herdr the session hook prints the rule and no warning (rc=$rc)"
-out=$(env -u HERDR_ENV HOME="$fake" "$repo/scripts/herdr-lock-session" 2>&1); rc=$?
-[ $rc = 0 ] && [ -z "$out" ] && ok || bad "outside Herdr the session hook prints nothing when all is well (rc=$rc): $out"
 out=$(env -u HERDR_ENV HOME="$fake" PATH="/usr/bin:/bin" "$repo/scripts/herdr-lock-session" 2>&1); rc=$?
 [ $rc = 0 ] && [ -z "$out" ] && ok || bad "without herdr installed the session hook is silent (rc=$rc): $out"
 CLAUDE_PROJECT_DIR="$main" HERDR_WORKSPACE_ID=wH HOME="$fake" "$repo/scripts/herdr-lock-session" >/dev/null 2>&1 \
@@ -274,9 +317,9 @@ session() { env -u HERDR_ENV HOME="$fake" CLAUDE_PLUGIN_DATA="$data" PATH="$drif
 out=$(FAKE_HERDR_VERSION=1.0.0 FAKE_ADD_TAB_CMD=spawn session); rc=$?
 [ $rc = 1 ] && grep -q "tab: spawn" <<<"$out" && ok || bad "a new tab subcommand should be reported (rc=$rc): $out"
 out=$(FAKE_HERDR_VERSION=1.0.0 FAKE_ADD_TAB_CMD=spawn session); rc=$?
-[ $rc = 0 ] && [ -z "$out" ] && ok || bad "the same Herdr version should be reported only once (rc=$rc): $out"
+[ $rc = 0 ] && ! grep -q "needs attention" <<<"$out" && ok || bad "the same Herdr version should be reported only once (rc=$rc): $out"
 out=$(FAKE_HERDR_VERSION=1.0.1 FAKE_DROP_TAB_CMD=rename session); rc=$?
-[ $rc = 0 ] && [ -z "$out" ] && ok || bad "removed commands alone should not warn (rc=$rc): $out"
+[ $rc = 0 ] && ! grep -q "needs attention" <<<"$out" && ok || bad "removed commands alone should not warn (rc=$rc): $out"
 out=$(FAKE_HERDR_VERSION=1.0.2 FAKE_ADD_TAB_CMD=teleport session); rc=$?
 [ $rc = 1 ] && grep -q "tab: teleport" <<<"$out" && ok || bad "a new Herdr version with additions should warn again (rc=$rc): $out"
 

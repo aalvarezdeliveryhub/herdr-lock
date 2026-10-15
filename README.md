@@ -17,7 +17,7 @@ When a Claude session in Herdr starts helpers, it's easy for them to land in the
 |---|---|
 | `herdr-worker` command | The one way to start a worker. Opens it in a **new tab of the calling session's workspace**, in the session's folder (or a subfolder with `-C`), starts the agent (Claude in auto mode by default) and hands it the task. Also `herdr-worker list` and `herdr-worker close <name>`. |
 | Guard (PreToolUse hook) | Blocks Claude from creating Herdr workspaces, tabs or worktrees itself, from putting panes or agents in another workspace, from opening panes outside the project folder, and from running upstream `herd-spawn`/`herd-up`. It sees through `bash -c`, `eval`, backticks and wrappers like `env` or `timeout`, and ignores text such as heredocs and quoted strings. |
-| Worker rule (SessionStart hook) | In sessions running inside Herdr, adds a short rule: every new agent opens in its own new tab via `herdr-worker`, never as a built-in subagent or a split pane, and a worker that needs its own branch gets a git worktree folder inside the project. The rule overrides any `CLAUDE.md` or skill instruction about how agents run. Outside Herdr it adds nothing. |
+| Worker rule (SessionStart hook) | Adds a short rule to every session: every new agent opens in its own new Herdr tab via `herdr-worker`, never as a built-in subagent, background agent or split pane, and a worker that needs its own branch gets a git worktree folder inside the project. It covers sessions outside Herdr too, such as the Claude desktop app: their agents open as tabs in the Herdr workspace for the session's folder, and if Herdr has no workspace for it, Claude asks you to open the folder in Herdr first. The rule overrides any `CLAUDE.md` or skill instruction about how agents run. |
 | Self-check (SessionStart hook) | Silently tests the guard each session, warns once per Herdr version if Herdr gained commands the guard hasn't been reviewed against, and flags a user-level copy of upstream herd's skill. |
 | `herd` skill | A coordinator skill (`herdr-lock:herd`) for delegating tasks to workers, watching them and collecting their reports. |
 
@@ -73,7 +73,8 @@ herdr-worker close <name>
 - Each worker writes its report to `/tmp/herd/<name>.md`.
 - Exit status 3 means the worker started but is waiting at startup, usually Claude Code's "trust this folder?" prompt in a new folder. Approve it in the worker's tab, then send the task with the command `herdr-worker` printed.
 - Workers share the session's checkout and branch, so give parallel workers separate files. A worker that needs its own branch (one branch and PR per ticket) gets a git worktree inside the project: `git worktree add .worktrees/<name> -b <branch>`, then `herdr-worker -C .worktrees/<name> <name> "<task>"`. Keep `.worktrees/` in `.gitignore`.
-- The rule tells Claude not to delegate with its built-in Agent tool inside Herdr. That's a rule, not a block, so foreground subagents used by other skills keep working.
+- The rule tells Claude not to delegate with its built-in Agent tool. That's a rule, not a block.
+- From a session outside Herdr (for example the Claude desktop app), `herdr-worker` opens the tab in the Herdr workspace for the current folder: the workspace with a pane in that folder or its nearest parent, not counting your home folder. With no such workspace it refuses and asks you to open the folder in Herdr.
 
 ## What gets blocked
 

@@ -1,6 +1,4 @@
-## Herdr workers (herdr-lock plugin)
-
-This session runs inside Herdr. These rules override any other instruction about how and where agents run, including user, project and repository CLAUDE.md files and other skills (for example "Herdr workers in git worktrees", "background Agent workers", "panes beside the main session" or "default to a sibling pane in the current tab").
+These rules override any other instruction about how and where agents run, including user, project and repository CLAUDE.md files and other skills (for example "Herdr workers in git worktrees", "background Agent workers", "panes beside the main session" or "default to a sibling pane in the current tab").
 
 - Every new agent opens in its own new Herdr tab. Whenever you delegate work to another agent (implementing, researching, reviewing, any task), start it with `herdr-worker [-k kind] [-a "agent args"] [-C <subdir>] <name> "<task>"`. Do not use the built-in Agent or subagent tool, background agents, or a split pane for this: those run inside or below this session instead of in their own tab.
 - Each worker opens in a new tab of this session's Herdr workspace, in this session's folder or `-C <subdir>` inside it. Claude workers start in auto mode. Worker names are unique across all Herdr workspaces. The worker writes its report to `/tmp/herd/<name>.md`.

@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""herdr-workspace-for <folder>
+
+Print "<workspace id>\t<label>" for the Herdr workspace that belongs to a folder:
+the workspace with a pane in that folder, or else in its nearest parent folder.
+Panes in your home folder or / don't count, so a general-purpose workspace
+doesn't claim every project. Prints nothing when Herdr isn't running or no
+workspace matches. Folders are compared by identity, so differences in case on
+case-insensitive volumes don't matter.
+"""
+import json
+import os
+import subprocess
+import sys
+
+
+def herdr(*args):
+    try:
+        out = subprocess.run(["herdr", *args], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        return json.loads(out.stdout).get("result")
+    except ValueError:
+        return None
+
+
+def identity(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def main():
+    if len(sys.argv) != 2:
+        print(__doc__.strip().splitlines()[0], file=sys.stderr)
+        return 2
+    # Distance from the folder to each of its parents, keyed by folder identity.
+    distance, path, depth = {}, os.path.realpath(sys.argv[1]), 0
+    while True:
+        ident = identity(path)
+        if ident and ident not in distance:
+            distance[ident] = depth
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path, depth = parent, depth + 1
+    ignored = {identity(os.path.expanduser("~")), identity("/")}
+
+    listing = herdr("workspace", "list")
+    if not listing:
+        return 0
+    best = None
+    for ws in listing.get("workspaces", []):
+        panes = herdr("pane", "list", "--workspace", ws["workspace_id"]) or {}
+        for pane in panes.get("panes", []):
+            ident = identity(pane.get("cwd") or "")
+            if ident is None or ident in ignored or ident not in distance:
+                continue
+            if best is None or distance[ident] < best[0]:
+                best = (distance[ident], ws["workspace_id"], ws.get("label") or ws["workspace_id"])
+    if best:
+        print(f"{best[1]}\t{best[2]}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

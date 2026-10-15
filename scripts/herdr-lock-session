@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # herdr-lock-session [--hook]
 # Claude Code SessionStart hook of the herdr-lock plugin.
-# Inside Herdr (HERDR_ENV=1) it prints the Herdr workers rule into the session.
-# Wherever herdr is installed it checks that herdr-guard behaves, that the Herdr
+# Wherever herdr is installed it prints the Herdr workers rule into the session:
+# inside Herdr, or outside it (e.g. the Claude desktop app) when Herdr has a
+# workspace for the project folder, the full rule; outside Herdr with no such
+# workspace, a rule to ask the user to open the folder in Herdr before
+# delegating. It also checks that herdr-guard behaves, that the Herdr
 # CLI still matches what herdr-guard was written against, and that no user-level
 # herd skill tells agents to use upstream herd-spawn; problems are printed as a
 # warning. Without --hook, it exits 1 when there are problems.
@@ -13,7 +16,20 @@ here=$(cd "$(dirname "$0")" && pwd)
 guard="$here/herdr-guard"
 
 command -v herdr >/dev/null || exit 0
-[ "${HERDR_ENV:-}" = "1" ] && cat "$here/herdr-workers-rule.md"
+
+echo "## Herdr workers (herdr-lock plugin)"
+echo
+if [ "${HERDR_ENV:-}" = "1" ]; then
+  echo "This session runs inside Herdr."
+  echo
+  cat "$here/herdr-workers-rule.md"
+elif workspace=$("$here/herdr-workspace-for" "${CLAUDE_PROJECT_DIR:-$PWD}") && [ -n "$workspace" ]; then
+  echo "This session runs outside Herdr (for example in the Claude desktop app), but Herdr has a workspace for this folder: ${workspace#*$'\t'} (${workspace%%$'\t'*}). Agents you start with herdr-worker open as new tabs there."
+  echo
+  cat "$here/herdr-workers-rule.md"
+else
+  echo "This session runs outside Herdr, and Herdr has no workspace for this folder (or isn't running). Every new agent must open in its own Herdr tab, so before you delegate work to another agent (implementing, researching, reviewing, any task), ask the user to open this folder in Herdr; then start the agent with herdr-worker. Do not use the built-in Agent or subagent tool or background agents for delegated work instead. This overrides any other instruction about how agents run, including CLAUDE.md files and other skills."
+fi
 
 problems=()
 problem() { problems+=("$1"); }

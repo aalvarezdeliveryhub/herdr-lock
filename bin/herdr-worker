@@ -11,11 +11,20 @@
 # Exit status: 0 ok, 1 Herdr error, 2 refused (bad arguments, name in use, outside
 # the caller's workspace or folder), 3 the worker started but is blocked at startup
 # (e.g. a folder-trust prompt) and has not received its task.
+#
+# Outside Herdr (for example in the Claude desktop app), workers go to the Herdr
+# workspace for the current folder (see scripts/herdr-workspace-for).
 set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
 
-if [ -z "${HERDR_PANE_ID:-}" ] || [ -z "${HERDR_WORKSPACE_ID:-}" ]; then
-  echo "herdr-worker: run from inside a Herdr pane (HERDR_PANE_ID/HERDR_WORKSPACE_ID unset)" >&2
-  exit 1
+if [ -z "${HERDR_WORKSPACE_ID:-}" ]; then
+  found=$("$root/scripts/herdr-workspace-for" "$PWD")
+  if [ -z "$found" ]; then
+    echo "herdr-worker: this session runs outside Herdr, and Herdr has no workspace for $PWD (or isn't running). Ask the user to open this folder in Herdr, then try again." >&2
+    exit 2
+  fi
+  HERDR_WORKSPACE_ID=${found%%$'\t'*}
+  HERDR_PANE_ID=""
 fi
 
 agents_json() { herdr agent list | jq -c '.result.agents'; }
@@ -35,7 +44,7 @@ close_worker() {
   if [ "$(jq -r .workspace_id <<<"$found")" != "$HERDR_WORKSPACE_ID" ]; then
     echo "herdr-worker: $name is in another workspace; only workers in this one can be closed here" >&2; exit 2
   fi
-  if [ "$(jq -r .pane_id <<<"$found")" = "$HERDR_PANE_ID" ]; then
+  if [ -n "${HERDR_PANE_ID:-}" ] && [ "$(jq -r .pane_id <<<"$found")" = "$HERDR_PANE_ID" ]; then
     echo "herdr-worker: $name is running in your own tab; refusing to close it" >&2; exit 2
   fi
   herdr tab close "$(jq -r .tab_id <<<"$found")" >/dev/null

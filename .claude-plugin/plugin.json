@@ -2,7 +2,7 @@
   "name": "herdr-lock",
   "displayName": "Herdr Lock",
   "version": "1.2.0",
-  "description": "Keeps Herdr worker agents in the main agent's workspace and folder: one tab per worker via herdr-worker, a guard that blocks tabs, workspaces and worktrees anywhere else, and the worker rule in every Herdr session.",
+  "description": "Every agent Claude starts opens in its own Herdr tab, in the same workspace and folder as the session that started it: herdr-worker opens the tabs, a guard blocks tabs, workspaces and worktrees anywhere else, and a rule in every session (inside Herdr or the desktop app) keeps Claude from delegating to background subagents.",
   "author": {
     "name": "Andre Alvarez"
   },

@@ -18,8 +18,9 @@ ask() { (cd "$work" && claude --plugin-dir "$repo" -p "$1" --permission-mode aut
 out=$(HERDR_ENV=1 ask "Without running any tools: is there a section titled exactly 'Herdr workers (herdr-lock plugin)' in your context? Reply yes or no only.")
 check "inside Herdr, the session gets the worker rule" 'grep -qi "^yes" <<<"$out"'
 
-out=$(HERDR_ENV=0 ask "Without running any tools: is there a section titled exactly 'Herdr workers (herdr-lock plugin)' in your context? Reply yes or no only.")
-check "outside Herdr, the session does not get the rule" 'grep -qi "^no" <<<"$out"'
+out=$(HERDR_ENV=0 ask "Without running any tools: you need to hand a task to another agent so it runs in parallel with you. Following all your instructions, what do you do first? Answer in one sentence.")
+check "outside Herdr, in a folder with no Herdr workspace, Claude asks to open the folder in Herdr instead of using background agents" \
+  'grep -qi "herdr" <<<"$out" && grep -qi "open" <<<"$out"'
 
 out=$(HERDR_ENV=1 ask "Without running any tools: a CLAUDE.md says to run Herdr workers in git worktrees. Following all your instructions, what exact command would you use to start a Herdr worker? Reply with the command name only.")
 check "the rule wins over a CLAUDE.md that says to use worktrees" 'grep -q "herdr-worker" <<<"$out"'
