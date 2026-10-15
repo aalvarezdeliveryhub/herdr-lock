@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1 (2026-10-15)
+
+- The session self-test reports a broken guard's own exit status. On Linux it could report a broken pipe's status instead, so CI failed.
+
 ## 1.2.0 (2026-10-13)
 
 - Sessions outside Herdr, such as the Claude desktop app, now follow the rule too: `herdr-worker` opens their agents as tabs in the Herdr workspace for the session's folder, and with no such workspace Claude asks you to open the folder in Herdr instead of using background agents. Before, those sessions got no rule and fell back to background Agent-tool workers that ran inside the main session.

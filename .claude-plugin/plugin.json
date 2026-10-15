@@ -1,7 +1,7 @@
 {
   "name": "herdr-lock",
   "displayName": "Herdr Lock",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Every agent Claude starts opens in its own Herdr tab, in the same workspace and folder as the session that started it: herdr-worker opens the tabs, a guard blocks tabs, workspaces and worktrees anywhere else, and a rule in every session (inside Herdr or the desktop app) keeps Claude from delegating to background subagents.",
   "author": {
     "name": "Andre Alvarez"

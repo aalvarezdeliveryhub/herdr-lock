@@ -96,8 +96,10 @@ fi
 
 expect_guard() {
   local want=$1 ws=$2 cmd=$3 got
-  printf '%s' "$(jq -nc --arg c "$cmd" --arg d "$HOME" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}')" \
-    | HERDR_WORKSPACE_ID=$ws CLAUDE_PROJECT_DIR=$HOME "$guard" >/dev/null 2>&1
+  # A here-string, not a pipe: a guard that exits without reading its input must
+  # report its own status, not a broken pipe's.
+  HERDR_WORKSPACE_ID=$ws CLAUDE_PROJECT_DIR=$HOME "$guard" >/dev/null 2>&1 \
+    <<<"$(jq -nc --arg c "$cmd" --arg d "$HOME" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}')"
   got=$?
   [ "$got" = "$want" ] || problem "herdr-guard returned $got (expected $want) for: $cmd"
 }
